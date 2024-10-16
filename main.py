@@ -17,7 +17,6 @@ def apply_moving_average(trajectory, window_size=5):
     return smoothed_trajectory
 
 def draw_line_if_in_bounds(img, pt1, pt2, color, thickness):
-    # Перевіряємо, чи обидві точки в межах зображення
     if (0 <= pt1[0] < img.shape[1] and 0 <= pt1[1] < img.shape[0] and
         0 <= pt2[0] < img.shape[1] and 0 <= pt2[1] < img.shape[0]):
         cv2.line(img, pt1, pt2, color, thickness)
@@ -49,8 +48,8 @@ def main():
 
     h, w, _ = old_frame.shape
     trajectory_slam = []
-    trajectory_map = np.zeros((h, w * 2, 3), dtype=np.uint8)  # Створення за межами циклу
-    text_map = np.zeros((h, w * 2, 3), dtype=np.uint8)  # Мапа для тексту
+    trajectory_map = np.zeros((h, w * 2, 3), dtype=np.uint8)
+    text_map = np.zeros((h, w * 2, 3), dtype=np.uint8)
 
     frame_counter = 0
 
@@ -99,27 +98,20 @@ def main():
 
         draw_line_if_in_bounds(trajectory_map, (w, 0), (w, h), (255, 255, 255), 2)
 
-        # Очищаємо текстову мапу
         text_map.fill(0)
 
         if smoothed_trajectory_slam:
-            # Виводимо координати камери та глобальні координати
-            camera_position = slam.get_camera_position()  # Отримуємо позицію камери
-            global_position = slam.get_global_position()  # Отримуємо глобальні координати
+            camera_position = slam.get_camera_position()
+            global_position = slam.get_global_position()
 
-            # Виводимо позицію камери з правого боку
             cv2.putText(text_map, f"Позицiя камери: ({camera_position[0][0]:.1f}, {camera_position[1][0]:.1f}, {camera_position[2][0]:.1f})", (w + 10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
 
-            # Виводимо глобальні координати з лівого боку
             cv2.putText(text_map, f"Глобальнi координати: ({global_position[0][0]:.1f}, {global_position[1][0]:.1f}, {global_position[2][0]:.1f})", (10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Додаємо номер кадру
         cv2.putText(frame, f"Кадр {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
 
-        # Об'єднуємо мапу координат з основною мапою
         combined_map = cv2.add(trajectory_map, text_map)
 
-        # Додаємо номер кадру на мапу
         cv2.putText(combined_map, f"Кадр {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
 
         cv2.imshow("Візуальна одометрія", frame)
