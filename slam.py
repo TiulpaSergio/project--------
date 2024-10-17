@@ -1,30 +1,25 @@
 import cv2
 import numpy as np
+from feature_detection import detect_features, match_features, get_matched_points
 
 class SLAM:
     def __init__(self):
         self.orb = cv2.ORB_create()
-        
         self.map_points = []
-        
         self.camera_position = np.zeros((3, 1))
-        
         self.global_position = np.zeros((3, 1))
-        
         self.global_trajectory = []
-
         self.prev_gray = None
         self.prev_keypoints = None
         self.prev_descriptors = None
-        
         self.trajectory = []
+        self.init_kalman()
 
+    def init_kalman(self):
         self.kalman = cv2.KalmanFilter(6, 3)
         self.kalman.measurementMatrix = np.eye(3, 6, dtype=np.float32)
         self.kalman.transitionMatrix = np.eye(6, dtype=np.float32)
-        self.kalman.transitionMatrix[0:3, 0:3] = np.eye(3)
         self.kalman.transitionMatrix[0:3, 3:6] = np.eye(3)
-        self.kalman.transitionMatrix[3:6, 3:6] = np.eye(3)
         self.kalman.processNoiseCov = np.eye(6, dtype=np.float32) * 1e-5
         self.kalman.measurementNoiseCov = np.eye(3, dtype=np.float32) * 1e-1
         self.kalman.statePost = np.zeros((6, 1), dtype=np.float32)
@@ -34,121 +29,67 @@ class SLAM:
 
         if self.prev_gray is None:
             self.prev_gray = gray
-            self.prev_keypoints, self.prev_descriptors = self.detect_features(gray)
+            self.prev_keypoints, self.prev_descriptors = detect_features(self.orb, gray)
             return
 
-        keypoints, descriptors = self.detect_features(gray)
-
-        if descriptors is None:
-            print("Дескриптори для поточного кадру не знайдені.")
+        keypoints, descriptors = detect_features(self.orb, gray)
+        if descriptors is None or len(keypoints) < 50:
+            print("Недостатня кількість точок для обробки (потрібно мінімум 50).")
             return
 
-        matches = self.match_features(self.prev_descriptors, descriptors)
-
-        if len(matches) == 0:
-            print("Відповідності не знайдені.")
+        matches = match_features(self.prev_descriptors, descriptors)
+        if len(matches) < 50:
+            print("Недостатня кількість відповідностей (мінімум 50).")
             return
 
-        matched_pts_prev, matched_pts_curr = self.get_matched_points(matches, self.prev_keypoints, keypoints)
-
-        if len(matched_pts_prev) >= 8:
-            self.localize_camera(matched_pts_prev, matched_pts_curr)
-        else:
-            print("Недостатня кількість відповідних точок для локалізації.")
+        matched_pts_prev, matched_pts_curr = get_matched_points(matches, self.prev_keypoints, keypoints)
+        self.localize_camera(matched_pts_prev, matched_pts_curr)
 
         self.prev_gray = gray
         self.prev_keypoints = keypoints
         self.prev_descriptors = descriptors
 
-    def detect_features(self, gray):
-        keypoints, descriptors = self.orb.detectAndCompute(gray, None)
-        if descriptors is None:
-            print("Дескриптори не були обчислені.")
-        else:
-            print(f"Знайдено ключових точок: {len(keypoints)}")
-        return np.array([kp.pt for kp in keypoints]), descriptors
-
-
-    def match_features(self, descriptors1, descriptors2):
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        matches = bf.match(descriptors1, descriptors2)
-        return sorted(matches, key=lambda x: x.distance)
-
-    def get_matched_points(self, matches, keypoints1, keypoints2):
-        matched_pts_prev = np.float32([keypoints1[m.queryIdx] for m in matches])
-        matched_pts_curr = np.float32([keypoints2[m.trainIdx] for m in matches])
-        return matched_pts_prev, matched_pts_curr
-
     def localize_camera(self, pts_prev, pts_curr):
+        # Локалізація камери з використанням фундаментальної та основної матриць
         F, mask = cv2.findFundamentalMat(pts_prev, pts_curr, cv2.RANSAC, 0.1, 0.99)
-        if F is None:
-            print("Не вдалося знайти фундаментальну матрицю.")
-            return
+        pts_prev, pts_curr = pts_prev[mask.ravel() == 1], pts_curr[mask.ravel() == 1]
 
-        pts_prev = pts_prev[mask.ravel() == 1]
-        pts_curr = pts_curr[mask.ravel() == 1]
-
-        if len(pts_prev) < 8:
-            print("Недостатня кількість точок для локалізації камери.")
-            return
-        
         E, mask_e = cv2.findEssentialMat(pts_prev, pts_curr, method=cv2.RANSAC, prob=0.999, threshold=1.0)
-        if E is None:
-            print("Не вдалося знайти основну матрицю.")
-            return
-
-        print(f"Матриця E до очищення: {E}")
-
-        pts_prev = pts_prev[mask_e.ravel() == 1]
-        pts_curr = pts_curr[mask_e.ravel() == 1]
-
-        if len(pts_prev) < 8:
-            print("Недостатня кількість точок після очищення для локалізації камери.")
+        if E is None or np.sum(mask_e) < 10:
+            print("Не вдалося знайти основну матрицю або недостатньо точок.")
             return
 
         _, R, t, mask_r = cv2.recoverPose(E, pts_prev, pts_curr)
-        if R is None or t is None:
-            print("Не вдалося відновити матрицю обертання та вектор переміщення.")
-            return
+        if np.linalg.norm(t) > 0.01:
+            self.update_positions(R, t)
 
-        if R.shape != (3, 3) or t.shape != (3, 1):
-            print("Невірні розміри матриці R або вектора t.")
-            return
-
+    def update_positions(self, R, t):
         self.camera_position += t
-
         self.trajectory.append(self.camera_position.copy())
-        self.update_global_position(R, t)
 
         measurement = self.camera_position[:3].reshape(-1, 1).astype(np.float32)
         self.kalman.correct(measurement)
         self.kalman.predict()
 
         filtered_position = self.kalman.statePost[:3]
+        self.camera_position[:3] = filtered_position
 
-        print(f"Матриця обертання R: {R}")
-        print(f"Вектор переміщення t: {t}")
-        print(f"Матриця E: {E}")
-        print(f"Залишилось точок: {len(pts_prev)}")
-        print(f"Оновлена позиція камери: {self.camera_position.T}")
-        print(f"Відфільтрована позиція: {filtered_position.T}")
-        print(f"Глобальні координати: {self.global_position.T}")
+        self.update_global_position(R, t)
 
     def update_global_position(self, R, t):
         self.global_position += R @ t
         self.global_trajectory.append(self.global_position.copy())
 
-        if self.global_position.shape != (3, 1):
-            print("Невірні розміри глобальних координат.")
-
-    def get_global_position(self):
-        return self.global_position.copy()
-    
-    def get_camera_position(self):
-        return self.camera_position.copy()
-
     def get_trajectory(self):
         return np.array(self.trajectory)
-    
+
     def get_global_trajectory(self):
         return np.array(self.global_trajectory)
+
+    def get_global_position(self):
+        print(f"Глобальні координати: {self.global_position.T}")
+        return self.global_position.copy()
+
+    def get_camera_position(self):
+        print(f"Оновлена позиція камери: {self.camera_position.T}")
+        return self.camera_position.copy()

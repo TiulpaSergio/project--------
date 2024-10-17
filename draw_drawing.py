@@ -28,7 +28,6 @@ def draw_trajectory(smoothed_trajectory1, smoothed_trajectory2, trajectory_map, 
 
         cv2.line(trajectory_map, pt1, pt2, (0, 255, 0), 2)
 
-    # Малюємо другу траєкторію (праворуч)
     for i in range(1, len(smoothed_trajectory2)):
         pt1 = (
             int(smoothed_trajectory2[i - 1][0] * scale) + (3 * left_offset), 
