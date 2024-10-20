@@ -1,9 +1,11 @@
 import cv2
 import numpy as np
+import os
 from collections import deque
 from slam import SLAM
 from draw_drawing import draw_trajectory
 from feature_detection import detect_keypoints, track_keypoints, update_keypoints_if_needed
+from sensor_loader import SensorLoader
 
 def apply_moving_average(trajectory, window_size=5):
     smoothed_trajectory = []
@@ -20,25 +22,53 @@ def draw_line_if_in_bounds(img, pt1, pt2, color, thickness):
         0 <= pt2[0] < img.shape[1] and 0 <= pt2[1] < img.shape[0]):
         cv2.line(img, pt1, pt2, color, thickness)
 
+def load_frames_from_folder(folder_path):
+    # Завантаження та сортування файлів PNG за іменами
+    frame_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
+    return [os.path.join(folder_path, f) for f in frame_files]
+
 def main():
-    slam = SLAM()
-    cap = cv2.VideoCapture('output/output_video2.avi')
-    if not cap.isOpened():
-        print("Не вдалося відкрити відеофайл")
+    # Завантаження даних сенсорів
+    sensor_loader = SensorLoader(
+        'mav0/imu0/sensor.yaml', 
+        'mav0/cam0/sensor.yaml', 
+        'mav0/leica0/sensor.yaml',
+        'mav0/imu0/data.csv', 
+        'mav0/cam0/data.csv', 
+        'mav0/leica0/data.csv'
+    )
+    
+    imu_data = sensor_loader.get_imu_data()
+    camera_data = sensor_loader.get_camera_data()
+    leica_data = sensor_loader.get_leica_data()
+    imu_csv_data = sensor_loader.get_imu_csv()
+    camera_csv_data = sensor_loader.get_camera_csv()
+    leica_csv_data = sensor_loader.get_leica_csv()
+
+    print("IMU Data:", imu_data)
+    print("Camera Data:", camera_data)
+    print("Leica Data:", leica_data)
+    print("IMU_csv Data:", imu_csv_data)
+    print("Camera_csv Data:", camera_csv_data)
+    print("Leica_csv Data:", leica_csv_data)
+
+    # Ініціалізація SLAM з даними сенсорів
+    slam = SLAM(imu_data, camera_data, leica_data, imu_csv_data, camera_csv_data, leica_csv_data)
+    
+    # Завантаження PNG фреймів
+    frames = load_frames_from_folder('mav0/cam0/data')
+
+    if not frames:
+        print("Не знайдено жодного фрейму в каталозі.")
         return
 
-    lk_params = {
-        'winSize': (21, 21),
-        'maxLevel': 3,
-        'criteria': (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.03)
-    }
+    # Ініціалізація параметрів
+    lk_params = {'winSize': (21, 21), 'maxLevel': 3, 
+                 'criteria': (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.03)}
     detector = cv2.ORB_create(nfeatures=3000, scoreType=cv2.ORB_FAST_SCORE, edgeThreshold=15)
 
-    ret, old_frame = cap.read()
-    if not ret:
-        print("Не вдалося прочитати перший кадр відео")
-        return
-
+    # Завантаження першого кадру
+    old_frame = cv2.imread(frames[0])
     old_gray = cv2.cvtColor(old_frame, cv2.COLOR_BGR2GRAY)
     p0 = detect_keypoints(detector, old_gray)
 
@@ -48,11 +78,8 @@ def main():
 
     frame_counter = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
+    for frame_path in frames[1:]:
+        frame = cv2.imread(frame_path)
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         good_new, good_old = track_keypoints(old_gray, frame_gray, p0, lk_params)
 
@@ -68,6 +95,7 @@ def main():
 
         p0 = update_keypoints_if_needed(p0, frame_gray, detector)
 
+        # Обробка кадру SLAM
         slam.process_frame(frame)
         trajectory_slam = slam.get_trajectory()
         smoothed_trajectory_slam = apply_moving_average(trajectory_slam)
@@ -82,27 +110,26 @@ def main():
             camera_position = slam.get_camera_position().flatten()
             global_position = slam.get_global_position().flatten()
 
-            cv2.putText(text_map, f"Позицiя камери: ({camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f})",
+            cv2.putText(text_map, f"Камера: ({camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f})",
                         (w + 10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
 
-            cv2.putText(text_map, f"Глобальнi координати: ({global_position[0]:.1f}, {global_position[1]:.1f}, {global_position[2]:.1f})",
+            cv2.putText(text_map, f"Глобальні: ({global_position[0]:.1f}, {global_position[1]:.1f}, {global_position[2]:.1f})",
                         (10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
 
         print(f"Кадр №{frame_counter}:")
 
         cv2.putText(text_map, f"Кадр {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
-
         cv2.putText(frame, f"Кадр {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
+
         combined_map = cv2.add(trajectory_map, text_map)
 
-        cv2.imshow("Візуальна одометрія", frame)
+        cv2.imshow('Frames', frame)
         cv2.imshow('Trajectory Map', combined_map)
 
         frame_counter += 1
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
