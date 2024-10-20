@@ -110,10 +110,10 @@ def main():
             camera_position = slam.get_camera_position().flatten()
             global_position = slam.get_global_position().flatten()
 
-            cv2.putText(text_map, f"Камера: ({camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f})",
+            cv2.putText(text_map, f"Позицiя камери: ({camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f})",
                         (w + 10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
 
-            cv2.putText(text_map, f"Глобальні: ({global_position[0]:.1f}, {global_position[1]:.1f}, {global_position[2]:.1f})",
+            cv2.putText(text_map, f"Глобальнi координати: ({global_position[0]:.1f}, {global_position[1]:.1f}, {global_position[2]:.1f})",
                         (10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
 
         print(f"Кадр №{frame_counter}:")
@@ -127,8 +127,6 @@ def main():
         cv2.imshow('Trajectory Map', combined_map)
 
         frame_counter += 1
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
 
     cv2.destroyAllWindows()
 

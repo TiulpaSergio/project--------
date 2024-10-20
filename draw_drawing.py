@@ -9,7 +9,6 @@ def draw_trajectory(smoothed_trajectory1, smoothed_trajectory2, trajectory_map, 
     if len(smoothed_trajectory2) > max_length:
         smoothed_trajectory2 = smoothed_trajectory2[-max_length:]
 
-
     offset_y = height // 2 
     left_offset = width // 4
 

@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
-import pandas as pd
 from feature_detection import detect_features, match_features, get_matched_points
-from scipy.spatial.transform import Rotation as R
 
 class SLAM:
     def __init__(self, imu_yaml, camera_yaml, leica_yaml, imu_csv, camera_csv, leica_csv):
@@ -38,12 +36,10 @@ class SLAM:
         self.init_bundle_adjustment()
         self.process_data()
 
-    def process_data(self):
-        
+    def process_data(self): 
         self.imu_csv_data.columns = ['timestamp', 'w_RS_S_x', 'w_RS_S_y', 'w_RS_S_z', 'a_RS_S_x', 'a_RS_S_y', 'a_RS_S_z']
         self.leica_csv_data.columns = ['timestamp', 'p_RS_R_x', 'p_RS_R_y', 'p_RS_R_z']
         self.camera_csv_data.columns = ['timestamp', 'filename']
-
         # Доступ до даних IMU
         self.imu_timestamps = self.imu_csv_data['timestamp'].values  # Час
         self.imu_w_x = self.imu_csv_data['w_RS_S_x'].values  # Кутова швидкість по осі X
@@ -52,13 +48,11 @@ class SLAM:
         self.imu_a_x = self.imu_csv_data['a_RS_S_x'].values  # Прискорення по осі X
         self.imu_a_y = self.imu_csv_data['a_RS_S_y'].values  # Прискорення по осі Y
         self.imu_a_z = self.imu_csv_data['a_RS_S_z'].values  # Прискорення по осі Z
-
         # Доступ до даних Leica
         self.leica_timestamps = self.leica_csv_data['timestamp'].values  # Час
         self.leica_position_x = self.leica_csv_data['p_RS_R_x'].values  # Координата X
         self.leica_position_y = self.leica_csv_data['p_RS_R_y'].values  # Координата Y
         self.leica_position_z = self.leica_csv_data['p_RS_R_z'].values  # Координата Z
-
         # Доступ до даних камери
         self.camera_timestamps = self.camera_csv_data.iloc[:, 0].values
         self.camera_images = self.camera_csv_data.iloc[:, 1].values
@@ -74,26 +68,25 @@ class SLAM:
         self.kalman.statePost = np.zeros((9, 1), dtype=np.float32)
 
     def init_bundle_adjustment(self):
-        pass  # Якщо плануєш реалізувати, можеш додати тут код
+        pass
 
     def process_leica(self, leica_row):
         # Використовуємо нові дані Leica
         self.p_RS_R = np.array([
-            self.leica_csv_data.iloc[self.leica_index]['p_RS_R_x'],
-            self.leica_csv_data.iloc[self.leica_index]['p_RS_R_y'],
-            self.leica_csv_data.iloc[self.leica_index]['p_RS_R_z']
+            leica_row['p_RS_R_x'],
+            leica_row['p_RS_R_y'],
+            leica_row['p_RS_R_z']
         ])  # Отримуємо координати (форма (3,))
 
         # Оновлюємо глобальну позицію даними з Leica
         self.absolute_position = self.position + self.p_RS_R
 
     def integrate_imu(self, imu_row):
-        # Переконаємося, що індекс IMU в межах даних
-        if self.imu_index >= len(self.imu_csv_data):
-            raise IndexError("IMU index out of range")
-
-        # Витягнення прискорення з даних IMU
-        a_RS_S = self.imu_csv_data.iat[self.imu_index, self.imu_csv_data.columns.get_loc('a_RS_S_x'):self.imu_csv_data.columns.get_loc('a_RS_S_z') + 1].to_numpy()
+        a_RS_S = np.array([
+            imu_row['a_RS_S_x'],
+            imu_row['a_RS_S_y'],
+            imu_row['a_RS_S_z']
+        ])
 
         # Корекція прискорення з урахуванням гравітації
         a_RS_S_corrected = a_RS_S - self.gravity.flatten()
@@ -104,7 +97,7 @@ class SLAM:
         else:
             dt = 1 / self.imu_rate_hz
 
-        # Перевірка на адекватне значення dt
+        # Перевірка на адекватне значення dt (часовий інтервал між кадрами)
         if dt <= 0:
             raise ValueError(f"Invalid dt: {dt}")
 
@@ -117,6 +110,8 @@ class SLAM:
         # Додавання початкової позиції з Leica
         self.absolute_position = self.position + self.p_RS_R
 
+        # Вивід абсолютної позиції
+        print(f"Абсолютна позиція: {self.absolute_position.flatten()}")
 
     def process_frame(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -171,7 +166,8 @@ class SLAM:
             return
 
         # 4. Відновлення обертання та трансляції
-        _, R, t, mask_r = cv2.recoverPose(E, pts_prev, pts_curr)
+        _, R, t, _ = cv2.recoverPose(E, pts_prev, pts_curr)
+
         if np.linalg.norm(t) > 0.01:
             self.update_positions(R, t)
 
@@ -189,7 +185,7 @@ class SLAM:
     def update_positions(self, R, t):
         self.camera_position += t
         self.trajectory.append(self.camera_position.copy())
-        
+
         # Використовуємо нові дані для корекції калмана
         measurement = np.hstack((self.camera_position[:3].flatten(), self.velocity)).astype(np.float32)
         self.kalman.correct(measurement)  # Корекція
@@ -197,6 +193,10 @@ class SLAM:
         filtered_position = self.kalman.statePost[:3]
         self.camera_position[:3] = filtered_position
         self.update_global_position(R, t)
+
+        # Розрахунок абсолютного масштабу
+        scale = np.linalg.norm(t)  # Довжина вектора переміщення
+        print(f"Абсолютний масштаб (довжина вектора переміщення): {scale}")
 
     def update_global_position(self, R, t):
         self.global_position += R @ t
