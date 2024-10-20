@@ -147,25 +147,25 @@ class SLAM:
         self.prev_descriptors = descriptors
 
     def localize_camera(self, pts_prev, pts_curr):
-        # 1. Обчислення матриці гомографії з використанням RANSAC
+        # Обчислення матриці гомографії з використанням RANSAC
         H, mask_h = cv2.findHomography(pts_prev, pts_curr, cv2.RANSAC, 5.0)
         
         if H is not None:
             print("Матриця гомографії:")
             print(H)
 
-            # 2. Перевірка, чи підходить гомографія для опису руху
+            # Перевірка, чи підходить гомографія для опису руху
             if self.is_planar_motion(mask_h):
                 print("Рух камери в межах площини. Використання гомографії.")
                 self.apply_homography(H)
                 return  # Якщо гомографія коректна, завершуємо функцію
 
-        # 3. Якщо гомографія не підходить, переходимо до обчислення Essential Matrix
+        # Якщо гомографія не підходить, переходимо до обчислення Essential Matrix
         E, mask_e = cv2.findEssentialMat(pts_prev, pts_curr, method=cv2.RANSAC, prob=0.999, threshold=1.0)
         if E is None or np.sum(mask_e) < 10:
             return
 
-        # 4. Відновлення обертання та трансляції
+        # Відновлення обертання та трансляції
         _, R, t, _ = cv2.recoverPose(E, pts_prev, pts_curr)
 
         if np.linalg.norm(t) > 0.01:
@@ -174,7 +174,7 @@ class SLAM:
     def is_planar_motion(self, mask_h):
         """Перевірка, чи більшість точок узгоджуються з гомографією."""
         inliers = np.sum(mask_h)
-        return inliers > 0.8 * len(mask_h)  # 80% точок мають бути інлієрами
+        return inliers > 0.8 * len(mask_h)
 
     def apply_homography(self, H):
         """Застосування гомографії для оновлення позиції камери."""
