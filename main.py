@@ -51,7 +51,6 @@ def plot_trajectories(ax2d, ax3d, trajectory, frame_counter):
 
 def main():
     plot_ground_truth()
-    
     # Завантаження даних сенсорів
     sensor_loader = SensorLoader(
         'mav0/imu0/sensor.yaml', 
@@ -61,7 +60,6 @@ def main():
         'mav0/cam0/data.csv', 
         'mav0/leica0/data.csv'
     )
-    
     imu_data = sensor_loader.get_imu_data()
     camera_data = sensor_loader.get_camera_data()
     leica_data = sensor_loader.get_leica_data()
@@ -69,14 +67,7 @@ def main():
     camera_csv_data = sensor_loader.get_camera_csv()
     leica_csv_data = sensor_loader.get_leica_csv()
 
-    print(imu_data)
-    print(camera_data)
-    print(leica_data)
-    print(imu_csv_data)
-    print(camera_csv_data)
-    print(leica_csv_data)
-
-    # Ініціалізація SLAM з даними сенсорів(поки не інтегровано)
+    # Ініціалізація SLAM з даними сенсорів
     vo = VO(imu_data, camera_data, leica_data, imu_csv_data, camera_csv_data, leica_csv_data)
 
     frames = load_frames_from_folder('mav0/cam0/data')
@@ -91,15 +82,13 @@ def main():
     old_frame = cv2.imread(frames[0])
     old_gray = cv2.cvtColor(old_frame, cv2.COLOR_BGR2GRAY)
     p0 = detect_keypoints(detector, old_gray)
-
+    
     fig = plt.figure(figsize=(10, 8))
     ax2d = fig.add_subplot(211)
     ax3d = fig.add_subplot(212, projection='3d')
     plt.ion()
-
     cv2.namedWindow('Frames', cv2.WINDOW_NORMAL)
     cv2.setWindowProperty('Frames', cv2.WND_PROP_TOPMOST, 1)  # Завжди на передньому плані
-
     frame_counter = 0
     plot_frequency = 5
     global_trajectory = []
@@ -120,13 +109,16 @@ def main():
             p0 = good_new.reshape(-1, 1, 2)
 
         p0 = update_keypoints_if_needed(p0, frame_gray, detector)
-        global_trajectory
+        
+        # Виклик методу VO для обчислення траєкторії
+        vo.update(frame_gray, good_new)  # Передати поточний кадр та нові ключові точки
+        global_trajectory = vo.compute_trajectory()  # Отримати глобальну траєкторію
         smoothed_trajectory = apply_moving_average(global_trajectory)
 
         if frame_counter % plot_frequency == 0:
             plot_trajectories(ax2d, ax3d, smoothed_trajectory, frame_counter)
 
-        print(f"Кадр №",frame_counter)
+        print(f"Кадр № {frame_counter}")
         cv2.putText(frame, f"Кадр: {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
         cv2.imshow('Frames', frame)
 
