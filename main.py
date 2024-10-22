@@ -2,10 +2,11 @@ import cv2
 import numpy as np
 import os
 from collections import deque
-from slam import SLAM
-from draw_drawing import draw_trajectory
+from vo import VO
 from feature_detection import detect_keypoints, track_keypoints, update_keypoints_if_needed
 from sensor_loader import SensorLoader
+import matplotlib.pyplot as plt
+from ground_truth import plot_ground_truth
 
 def apply_moving_average(trajectory, window_size=5):
     smoothed_trajectory = []
@@ -14,20 +15,43 @@ def apply_moving_average(trajectory, window_size=5):
         window.append(point)
         avg_x = np.mean([p[0] for p in window])
         avg_y = np.mean([p[1] for p in window])
-        smoothed_trajectory.append((avg_x, avg_y))
+        avg_z = np.mean([p[2] for p in window])
+        smoothed_trajectory.append((avg_x, avg_y, avg_z))
     return smoothed_trajectory
 
-def draw_line_if_in_bounds(img, pt1, pt2, color, thickness):
-    if (0 <= pt1[0] < img.shape[1] and 0 <= pt1[1] < img.shape[0] and
-        0 <= pt2[0] < img.shape[1] and 0 <= pt2[1] < img.shape[0]):
-        cv2.line(img, pt1, pt2, color, thickness)
-
 def load_frames_from_folder(folder_path):
-    # Завантаження та сортування файлів PNG за іменами
     frame_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
     return [os.path.join(folder_path, f) for f in frame_files]
 
+def plot_trajectories(ax2d, ax3d, trajectory, frame_counter):
+    ax3d.cla()  # Очищення осей 3D графіка
+    if len(trajectory) > 0:
+        trajectory = np.array(trajectory)
+        ax3d.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2], label='Траєкторія', color='b')
+        ax3d.set_xlabel('X координати')
+        ax3d.set_ylabel('Y координати')
+        ax3d.set_zlabel('Z координати')
+        ax3d.set_title('3D Траєкторія')
+        ax3d.legend()
+
+    # Малювання 2D траєкторії
+    ax2d.cla()  # Очищення осей 2D графіка
+    ax2d.set_title('2D Траєкторія')
+    ax2d.set_xlabel('X координати')
+    ax2d.set_ylabel('Y координати')
+
+    if len(trajectory) > 0:
+        trajectory_2d = trajectory[:, :2]
+        ax2d.plot(trajectory_2d[:, 0], trajectory_2d[:, 1], label='Траєкторія', color='g')
+        ax2d.legend()
+
+        # Додавання номера кадру до графіка
+        ax2d.text(0.05, 0.95, f"Кадр: {frame_counter}", transform=ax2d.transAxes, 
+                  fontsize=14, color='white', bbox=dict(facecolor='black', alpha=0.5))
+
 def main():
+    plot_ground_truth()
+    
     # Завантаження даних сенсорів
     sensor_loader = SensorLoader(
         'mav0/imu0/sensor.yaml', 
@@ -45,38 +69,40 @@ def main():
     camera_csv_data = sensor_loader.get_camera_csv()
     leica_csv_data = sensor_loader.get_leica_csv()
 
-    print("IMU Data:", imu_data)
-    print("Camera Data:", camera_data)
-    print("Leica Data:", leica_data)
-    print("IMU_csv Data:", imu_csv_data)
-    print("Camera_csv Data:", camera_csv_data)
-    print("Leica_csv Data:", leica_csv_data)
+    print(imu_data)
+    print(camera_data)
+    print(leica_data)
+    print(imu_csv_data)
+    print(camera_csv_data)
+    print(leica_csv_data)
 
-    # Ініціалізація SLAM з даними сенсорів
-    slam = SLAM(imu_data, camera_data, leica_data, imu_csv_data, camera_csv_data, leica_csv_data)
-    
-    # Завантаження PNG фреймів
+    # Ініціалізація SLAM з даними сенсорів(поки не інтегровано)
+    vo = VO(imu_data, camera_data, leica_data, imu_csv_data, camera_csv_data, leica_csv_data)
+
     frames = load_frames_from_folder('mav0/cam0/data')
-
     if not frames:
         print("Не знайдено жодного фрейму в каталозі.")
         return
 
-    # Ініціалізація параметрів
+    detector = cv2.ORB_create(nfeatures=3000)
     lk_params = {'winSize': (21, 21), 'maxLevel': 3, 
                  'criteria': (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.03)}
-    detector = cv2.ORB_create(nfeatures=3000, scoreType=cv2.ORB_FAST_SCORE, edgeThreshold=15)
 
-    # Завантаження першого кадру
     old_frame = cv2.imread(frames[0])
     old_gray = cv2.cvtColor(old_frame, cv2.COLOR_BGR2GRAY)
     p0 = detect_keypoints(detector, old_gray)
 
-    h, w, _ = old_frame.shape
-    trajectory_map = np.zeros((h, w * 2, 3), dtype=np.uint8)
-    text_map = np.zeros((h, w * 2, 3), dtype=np.uint8)
+    fig = plt.figure(figsize=(10, 8))
+    ax2d = fig.add_subplot(211)
+    ax3d = fig.add_subplot(212, projection='3d')
+    plt.ion()
+
+    cv2.namedWindow('Frames', cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty('Frames', cv2.WND_PROP_TOPMOST, 1)  # Завжди на передньому плані
 
     frame_counter = 0
+    plot_frequency = 5
+    global_trajectory = []
 
     for frame_path in frames[1:]:
         frame = cv2.imread(frame_path)
@@ -94,41 +120,27 @@ def main():
             p0 = good_new.reshape(-1, 1, 2)
 
         p0 = update_keypoints_if_needed(p0, frame_gray, detector)
+        global_trajectory
+        smoothed_trajectory = apply_moving_average(global_trajectory)
 
-        # Обробка кадру SLAM
-        slam.process_frame(frame)
-        trajectory_slam = slam.get_trajectory()
-        smoothed_trajectory_slam = apply_moving_average(trajectory_slam)
-        global_trajectory = slam.get_global_trajectory()
-        smoothed_global_trajectory = apply_moving_average(global_trajectory)
+        if frame_counter % plot_frequency == 0:
+            plot_trajectories(ax2d, ax3d, smoothed_trajectory, frame_counter)
 
-        draw_trajectory(smoothed_global_trajectory, smoothed_trajectory_slam, trajectory_map, scale=1, max_length=100)
-        draw_line_if_in_bounds(trajectory_map, (w, 0), (w, h), (255, 255, 255), 2)
-
-        text_map.fill(0)
-        if smoothed_trajectory_slam:
-            camera_position = slam.get_camera_position().flatten()
-            global_position = slam.get_global_position().flatten()
-
-            cv2.putText(text_map, f"Позицiя камери: ({camera_position[0]:.1f}, {camera_position[1]:.1f}, {camera_position[2]:.1f})",
-                        (w + 10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
-
-            cv2.putText(text_map, f"Глобальнi координати: ({global_position[0]:.1f}, {global_position[1]:.1f}, {global_position[2]:.1f})",
-                        (10, h - 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (255, 255, 255), 1)
-
-        print(f"Кадр №{frame_counter}:")
-
-        cv2.putText(text_map, f"Кадр {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(frame, f"Кадр {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
-
-        combined_map = cv2.add(trajectory_map, text_map)
-
+        print(f"Кадр №",frame_counter)
+        cv2.putText(frame, f"Кадр: {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
         cv2.imshow('Frames', frame)
-        cv2.imshow('Trajectory Map', combined_map)
 
+        if cv2.waitKey(1) & 0xFF == ord('1'):
+            cv2.destroyAllWindows()
+            plt.close('all')
+            return
+
+        plt.pause(0.001)
         frame_counter += 1
 
     cv2.destroyAllWindows()
+    plt.ioff()
+    plt.show()
 
 if __name__ == "__main__":
     main()

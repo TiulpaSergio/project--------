@@ -6,7 +6,7 @@ def detect_keypoints(detector, frame_gray):
     return np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 1, 2)
 
 def track_keypoints(old_gray, frame_gray, p0, lk_params):
-    p1, st = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, p0, None, **lk_params)
+    p1, st, *_ = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, p0, None, **lk_params)
     if p1 is not None and st is not None:
         good_new = p1[st == 1]
         good_old = p0[st == 1]
@@ -30,7 +30,9 @@ def match_features(desc1, desc2):
     matches = bf.match(desc1, desc2)
     return sorted(matches, key=lambda x: x.distance)
 
-def get_matched_points(matches, kp1, kp2):
+def get_matched_points(kp1, kp2, matches):
+    """Отримує координати точок, що були зіставлені, на основі індексів."""
     pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
     pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
     return pts1, pts2
+

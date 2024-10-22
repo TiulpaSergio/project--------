@@ -30,7 +30,7 @@ class SensorLoader:
 
     def get_camera_data(self):
         """Повертає параметри та дані камери."""
-        return self.camera_data  # Додаємо дані камери
+        return self.camera_data
         
     def get_leica_data(self):
         """Повертає параметри та дані Leica-сенсора."""
