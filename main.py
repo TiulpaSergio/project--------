@@ -6,7 +6,6 @@ from vo import VO
 from feature_detection import detect_keypoints, track_keypoints, update_keypoints_if_needed
 from sensor_loader import SensorLoader
 import matplotlib.pyplot as plt
-from ground_truth import plot_ground_truth
 
 def apply_moving_average(trajectory, window_size=5):
     smoothed_trajectory = []
@@ -23,34 +22,63 @@ def load_frames_from_folder(folder_path):
     frame_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
     return [os.path.join(folder_path, f) for f in frame_files]
 
-def plot_trajectories(ax2d, ax3d, trajectory, frame_counter):
-    ax3d.cla()  # Очищення осей 3D графіка
-    if len(trajectory) > 0:
-        trajectory = np.array(trajectory)
-        ax3d.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2], label='Траєкторія', color='b')
-        ax3d.set_xlabel('X координати')
-        ax3d.set_ylabel('Y координати')
-        ax3d.set_zlabel('Z координати')
-        ax3d.set_title('3D Траєкторія')
-        ax3d.legend()
+def load_ground_truth(file_path):
+    # Завантаження Ground Truth даних
+    ground_truth = []
+    with open(file_path, 'r') as f:
+        next(f)  # Пропустити перший рядок (коментарі)
+        for line in f:
+            data = line.strip().split(',')
+            if len(data) >= 4:  # Перевірка на кількість стовпців
+                x = float(data[1])
+                y = float(data[2])
+                z = float(data[3])
+                ground_truth.append((x, y, z))
+    return ground_truth
+    
+def plot_trajectories(ax2d_vo, ax3d_vo, vo_trajectory, ax2d_gt, ax3d_gt, gt_trajectory, frame_counter):
+    # Очищення попередніх даних
+    ax2d_vo.clear()
+    ax2d_gt.clear()
+    ax3d_vo.cla()
+    ax3d_gt.cla()
 
-    # Малювання 2D траєкторії
-    ax2d.cla()  # Очищення осей 2D графіка
-    ax2d.set_title('2D Траєкторія')
-    ax2d.set_xlabel('X координати')
-    ax2d.set_ylabel('Y координати')
+    # Налаштування заголовків
+    ax2d_vo.set_title(f'2D Trajectory VO (Кадр {frame_counter})')
+    ax2d_gt.set_title('2D Ground Truth')
+    ax3d_vo.set_title(f'3D Trajectory VO (Кадр {frame_counter})')
+    ax3d_gt.set_title('3D Ground Truth')
 
-    if len(trajectory) > 0:
-        trajectory_2d = trajectory[:, :2]
-        ax2d.plot(trajectory_2d[:, 0], trajectory_2d[:, 1], label='Траєкторія', color='g')
-        ax2d.legend()
+    # Побудова 2D траєкторій
+    ax2d_vo.plot([p[0] for p in vo_trajectory], [p[1] for p in vo_trajectory], 'b-', label='VO')
+    ax2d_gt.plot([p[0] for p in gt_trajectory], [p[1] for p in gt_trajectory], 'g-', label='GT')
 
-        # Додавання номера кадру до графіка
-        ax2d.text(0.05, 0.95, f"Кадр: {frame_counter}", transform=ax2d.transAxes, 
-                  fontsize=14, color='white', bbox=dict(facecolor='black', alpha=0.5))
+    # Додавання початкових та кінцевих точок на 2D графіках
+    if vo_trajectory:
+        ax2d_vo.plot(vo_trajectory[0][0], vo_trajectory[0][1], 'ro', label='Start')
+        ax2d_vo.plot(vo_trajectory[-1][0], vo_trajectory[-1][1], 'bo', label='End')
+    if gt_trajectory:
+        ax2d_gt.plot(gt_trajectory[0][0], gt_trajectory[0][1], 'ro', label='Start')
+        ax2d_gt.plot(gt_trajectory[-1][0], gt_trajectory[-1][1], 'bo', label='End')
+
+    # Побудова 3D траєкторій
+    ax3d_vo.plot([p[0] for p in vo_trajectory], [p[1] for p in vo_trajectory], [p[2] for p in vo_trajectory], 'b-')
+    ax3d_gt.plot([p[0] for p in gt_trajectory], [p[1] for p in gt_trajectory], [p[2] for p in gt_trajectory], 'g-')
+
+    # Додавання початкових та кінцевих точок на 3D графіках
+    if vo_trajectory:
+        ax3d_vo.scatter(vo_trajectory[0][0], vo_trajectory[0][1], vo_trajectory[0][2], color='r', s=50, label='Start')
+        ax3d_vo.scatter(vo_trajectory[-1][0], vo_trajectory[-1][1], vo_trajectory[-1][2], color='b', s=50, label='End')
+    if gt_trajectory:
+        ax3d_gt.scatter(gt_trajectory[0][0], gt_trajectory[0][1], gt_trajectory[0][2], color='r', s=50, label='Start')
+        ax3d_gt.scatter(gt_trajectory[-1][0], gt_trajectory[-1][1], gt_trajectory[-1][2], color='b', s=50, label='End')
+
+    # Оновлення графіків
+    ax2d_vo.legend()
+    ax2d_gt.legend()
+    plt.draw()
 
 def main():
-    plot_ground_truth()
     # Завантаження даних сенсорів
     sensor_loader = SensorLoader(
         'mav0/imu0/sensor.yaml', 
@@ -75,6 +103,10 @@ def main():
         print("Не знайдено жодного фрейму в каталозі.")
         return
 
+    # Завантаження даних Ground Truth
+    ground_truth = load_ground_truth('mav0/state_groundtruth_estimate0/data.csv')
+    smoothed_ground_truth = apply_moving_average(ground_truth)
+
     detector = cv2.ORB_create(nfeatures=3000)
     lk_params = {'winSize': (21, 21), 'maxLevel': 3, 
                  'criteria': (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.03)}
@@ -82,15 +114,21 @@ def main():
     old_frame = cv2.imread(frames[0])
     old_gray = cv2.cvtColor(old_frame, cv2.COLOR_BGR2GRAY)
     p0 = detect_keypoints(detector, old_gray)
-    
-    fig = plt.figure(figsize=(10, 8))
-    ax2d = fig.add_subplot(211)
-    ax3d = fig.add_subplot(212, projection='3d')
-    plt.ion()
+
+    # Ініціалізація вікна з 4 графіками
+    fig = plt.figure(figsize=(12, 8))
+    ax2d_vo = fig.add_subplot(221)  # 2D VO
+    ax2d_gt = fig.add_subplot(222)  # 2D Ground Truth
+    ax3d_vo = fig.add_subplot(223, projection='3d')  # 3D VO
+    ax3d_gt = fig.add_subplot(224, projection='3d')  # 3D Ground Truth
+
+    plt.ion()  # Увімкнення інтерактивного режиму
+
     cv2.namedWindow('Frames', cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty('Frames', cv2.WND_PROP_TOPMOST, 1)  # Завжди на передньому плані
+    cv2.setWindowProperty('Frames', cv2.WND_PROP_TOPMOST, 1)  # Вікно завжди зверху
+
     frame_counter = 0
-    plot_frequency = 5
+    plot_frequency = 5  # Частота оновлення графіків
     global_trajectory = []
 
     for frame_path in frames[1:]:
@@ -109,14 +147,16 @@ def main():
             p0 = good_new.reshape(-1, 1, 2)
 
         p0 = update_keypoints_if_needed(p0, frame_gray, detector)
-        
+
         # Виклик методу VO для обчислення траєкторії
-        vo.update(frame_gray, good_new)  # Передати поточний кадр та нові ключові точки
-        global_trajectory = vo.compute_trajectory()  # Отримати глобальну траєкторію
+        global_trajectory = vo.compute_trajectory(frame_gray)
         smoothed_trajectory = apply_moving_average(global_trajectory)
 
         if frame_counter % plot_frequency == 0:
-            plot_trajectories(ax2d, ax3d, smoothed_trajectory, frame_counter)
+            plot_trajectories(
+                ax2d_vo, ax3d_vo, smoothed_trajectory, 
+                ax2d_gt, ax3d_gt, smoothed_ground_truth, frame_counter
+            )
 
         print(f"Кадр № {frame_counter}")
         cv2.putText(frame, f"Кадр: {frame_counter}", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
