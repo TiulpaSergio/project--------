@@ -4,12 +4,12 @@ from scipy.spatial.transform import Rotation as R
 
 class VO:
     def __init__(self, imu_data, camera_data, leica_data, imu_csv_data, camera_csv_data, leica_csv_data):
-        self.imu_data = imu_data  # Дані IMU
-        self.camera_data = camera_data  # Дані камери
-        self.leica_data = leica_data  # Дані Leica
-        self.imu_csv_data = imu_csv_data  # CSV дані IMU
-        self.camera_csv_data = camera_csv_data  # CSV дані камери
-        self.leica_csv_data = leica_csv_data  # CSV дані Leica
+        self.imu_data = imu_data
+        self.camera_data = camera_data
+        self.leica_data = leica_data
+        self.imu_csv_data = imu_csv_data
+        self.camera_csv_data = camera_csv_data
+        self.leica_csv_data = leica_csv_data
 
         self.synchronized_imu_acceleration, self.synchronized_imu_angular_velocity = self.synchronize_data()
         
@@ -21,12 +21,10 @@ class VO:
             first_leica_record[2],
             first_leica_record[3]
         ])
-        print(f"self.initial_position: intrinsics={self.initial_position}")
         self.current_position = self.initial_position.copy()
         self.previous_position = self.initial_position.copy()
         self.trajectory = [self.initial_position.copy()]
 
-        # Ініціалізація змінних для відстаней
         self.distance_leica = 0.0
         self.scale = 1.0
 
@@ -34,7 +32,6 @@ class VO:
         self.accelerometer_noise_density = imu_data['accelerometer_noise_density']
         self.rate_hz_imu = imu_data['rate_hz']
 
-        # Ініціалізація параметрів камери
         self.intrinsics = camera_data['intrinsics']
         self.resolution = camera_data['resolution']
         self.rate_hz_camera = camera_data['rate_hz']
@@ -45,6 +42,7 @@ class VO:
         self.time_step = 1.0 / self.rate_hz_imu
         self.previous_frame = None
         self.current_frame = None
+        self.current_frame_index = 0
         self.total_distance = 0.0
 
         self.display_initialization_info()
@@ -56,60 +54,74 @@ class VO:
               f"resolution={self.resolution}, rate_hz_camera={self.rate_hz_camera}")
 
     def distanceLeica(self):
-        """Обчислює загальну відстань між усіма послідовними позиціями з Leica."""
-        # Отримання координат позицій з даних Leica
-        positions = self.leica_csv_data.iloc[:, 1:4].values  # Витягуємо x, y, z координати
+        """Обчислює відстань між позиціями на поточному та наступному кадрах з Leica."""
+        # Перевірка, чи є наступний кадр доступним
+        if self.current_frame_index < len(self.leica_csv_data) - 1:
+            position1 = self.leica_csv_data.iloc[self.current_frame_index, 1:4].values
+            position2 = self.leica_csv_data.iloc[self.current_frame_index + 1, 1:4].values
 
-        # Обчислення векторів різниць між усіма послідовними позиціями
-        diffs = positions[1:] - positions[:-1]  # Вектор різниць
+            # Обчислюємо відстань між цими позиціями
+            distance = np.linalg.norm(position2 - position1)
 
-        # Обчислення норм (відстаней) для кожного вектора
-        distances = np.linalg.norm(diffs, axis=1)  # Векторизоване обчислення відстаней
+            # Переходимо до наступного кадру
+            self.current_frame_index += 1
 
-        # Повернення загальної відстані
-        return np.sum(distances)
+            return distance
+        else:
+            raise ValueError("Немає наступного кадру для обчислення відстані.")
 
     def integrate_imu_data(self):
-            """Інтегрує дані IMU для обчислення загальної відстані та оновлення орієнтації."""
-            # Використання синхронізованих даних IMU
-            acceleration_data = np.mean(self.synchronized_imu_acceleration, axis=0)
-            print(f"acceleration_data: {acceleration_data}")
-            angular_velocity_data = self.synchronized_imu_angular_velocity
+        """Інтегрує дані IMU з контролем масштабування та вдосконаленим розрахунком зміщення."""
+        
+        # Використання синхронізованих даних IMU
+        acceleration_data = np.mean(self.synchronized_imu_acceleration, axis=0)
+        angular_velocity_data = self.synchronized_imu_angular_velocity
 
-            # Додавання шуму до прискорення та кутової швидкості
-            noise_scale = np.sqrt(1 / self.rate_hz_imu)
-            noisy_acceleration = acceleration_data + np.random.normal(0, self.accelerometer_noise_density * noise_scale, acceleration_data.shape)
-            noisy_angular_velocity = angular_velocity_data + np.random.normal(0, self.gyroscope_noise_density * noise_scale, angular_velocity_data.shape)
+        # Додавання шуму до прискорення та кутової швидкості
+        noise_scale = np.sqrt(1 / self.rate_hz_imu)
+        noisy_acceleration = acceleration_data + np.random.normal(
+            0, self.accelerometer_noise_density * noise_scale, acceleration_data.shape
+        )
+        noisy_angular_velocity = angular_velocity_data + np.random.normal(
+            0, self.gyroscope_noise_density * noise_scale, angular_velocity_data.shape
+        )
 
-            # Обчислення нових орієнтацій
-            rotations = R.from_rotvec(noisy_angular_velocity * self.time_step)
+        # Обчислення нових орієнтацій
+        rotations = R.from_rotvec(noisy_angular_velocity * self.time_step)
+        self.current_orientation = rotations * self.current_orientation  
+        global_acceleration = self.current_orientation.apply(noisy_acceleration)
 
-            # Оновлення поточної орієнтації
-            self.current_orientation = rotations * self.current_orientation  # Оновлення орієнтації
-            global_acceleration = self.current_orientation.apply(noisy_acceleration)
-            print(f"Previous Velocities: {self.previous_velocity}")
-            print(f"self.time_step: {self.time_step}")
+        # Масштабування прискорення, якщо воно занадто мале
+        acceleration_magnitude = np.linalg.norm(global_acceleration)
+        min_acceleration_threshold = 1e-5
 
-            # Обчислення нових швидкостей і зміщень
-            new_velocities = self.previous_velocity + (self.previous_acceleration + global_acceleration) * self.time_step
-            displacements = new_velocities * self.time_step
-            self.previous_velocity = new_velocities
+        if acceleration_magnitude < min_acceleration_threshold:
+            global_acceleration *= (min_acceleration_threshold / acceleration_magnitude)
 
-            # Накопичення загальної відстані
-            self.total_distance += np.linalg.norm(displacements)  # Додаємо норму зміщення до загальної відстані
+        # Можливе збільшення time_step для покращення зміщення
+        scaled_time_step = self.time_step * 10  # Пробуйте різні значення, наприклад, 5 або 10
 
-            print(f"Previous Acceleration: {self.previous_acceleration}")
+        # Розрахунок нових швидкостей з використанням прискорення
+        new_velocities = self.previous_velocity + global_acceleration * scaled_time_step
 
-            # Оновлення попередньої прискореності для наступної інтеграції
-            self.previous_acceleration = noisy_acceleration.copy()
+        # Обчислення зміщення
+        displacements = new_velocities * scaled_time_step
 
-            print(f"Noisy Acceleration: {noisy_acceleration}")
-            print(f"Noisy Angular Velocity: {noisy_angular_velocity}")
-            print(f"New Velocities: {new_velocities}")
-            print(f"Displacements: {displacements}")
-            print(f"Total Distance: {self.total_distance}")
+        # Накопичення загальної відстані
+        self.total_distance += np.linalg.norm(displacements)
 
-            return self.total_distance  # Повертаємо загальну відстань
+        # Оновлення попередніх значень
+        self.previous_velocity = new_velocities.copy()
+        self.previous_acceleration = noisy_acceleration.copy()
+
+        # Виведення важливих даних для дебагу
+        # print(f"Total Distance: {self.total_distance}")
+        # print(f"Noisy Acceleration: {noisy_acceleration}")
+        # print(f"Noisy Angular Velocity: {noisy_angular_velocity}")
+        # print(f"New Velocities: {new_velocities}")
+        # print(f"Displacements: {displacements}")
+
+        return self.total_distance
 
     def update_position(self, dx_camera, dy_camera, dz_camera, dx_imu, dy_imu, dz_imu):
         """Оновлює поточну позицію з урахуванням початкової."""
@@ -120,7 +132,7 @@ class VO:
         )
 
         # Оновлення поточної позиції відносно початкової
-        self.current_position = self.initial_position + displacement
+        self.current_position = self.previous_position + displacement
 
         # Розрахунок пройденої відстані
         distance = np.linalg.norm(self.current_position - self.previous_position)
@@ -142,10 +154,15 @@ class VO:
 
         # Обчислення зміщень на основі поточного та попереднього кадрів
         dx_camera, dy_camera, dz_camera = self.compute_motion(current_frame)
-        dx_imu, dy_imu, dz_imu = self.previous_acceleration * self.time_step
+
+        # Адаптивне масштабування прискорення
+        acceleration_mean = np.mean(np.abs(self.previous_acceleration))
+        scaling_factor = max(acceleration_mean * 10, 1e-4)  # Масштаб для корекції
+        scaled_acceleration = self.previous_acceleration * scaling_factor
+        dx_imu, dy_imu, dz_imu = scaled_acceleration * self.time_step
 
         print(f"Camera Motion: dx={dx_camera}, dy={dy_camera}, dz={dz_camera}")
-        print(f"IMU Motion: dx={dx_imu}, dy={dy_imu}, dz={dz_imu}")
+        print(f"Scaled IMU Motion: dx={dx_imu}, dy={dy_imu}, dz={dz_imu}")
 
         # Оновлення позиції з урахуванням камери та IMU
         self.update_position(dx_camera, dy_camera, dz_camera, dx_imu, dy_imu, dz_imu)
@@ -227,8 +244,8 @@ class VO:
         camera_timestamps = self.camera_csv_data.iloc[:, 0].values  # Перший стовпець (timestamp) для camera_csv_data
 
         # Логування отриманих часових міток
-        print(f"IMU Timestamps: {imu_timestamps[:5]}...")  # Виведення перших 5 значень
-        print(f"Camera Timestamps: {camera_timestamps[:5]}...")  # Виведення перших 5 значень
+        # print(f"IMU Timestamps: {imu_timestamps[:5]}...")  # Виведення перших 5 значень
+        # print(f"Camera Timestamps: {camera_timestamps[:5]}...")  # Виведення перших 5 значень
 
         # Інтерполяція даних IMU до частоти камери
         interpolated_acceleration_x = np.interp(camera_timestamps, imu_timestamps, 
@@ -246,12 +263,12 @@ class VO:
                                                     self.imu_csv_data.iloc[:, 6].values)  # Сьомий стовпець (angular_velocity_z)
 
         # Логування інтерпольованих даних
-        print(f"Interpolated Acceleration X: {interpolated_acceleration_x[:5]}...")  # Виведення перших 5 значень
-        print(f"Interpolated Acceleration Y: {interpolated_acceleration_y[:5]}...")
-        print(f"Interpolated Acceleration Z: {interpolated_acceleration_z[:5]}...")
-        print(f"Interpolated Angular Velocity X: {interpolated_angular_velocity_x[:5]}...")
-        print(f"Interpolated Angular Velocity Y: {interpolated_angular_velocity_y[:5]}...")
-        print(f"Interpolated Angular Velocity Z: {interpolated_angular_velocity_z[:5]}...")
+        # print(f"Interpolated Acceleration X: {interpolated_acceleration_x[:5]}...")  # Виведення перших 5 значень
+        # print(f"Interpolated Acceleration Y: {interpolated_acceleration_y[:5]}...")
+        # print(f"Interpolated Acceleration Z: {interpolated_acceleration_z[:5]}...")
+        # print(f"Interpolated Angular Velocity X: {interpolated_angular_velocity_x[:5]}...")
+        # print(f"Interpolated Angular Velocity Y: {interpolated_angular_velocity_y[:5]}...")
+        # print(f"Interpolated Angular Velocity Z: {interpolated_angular_velocity_z[:5]}...")
 
         # Збирання всіх інтерпольованих даних в масиви
         interpolated_acceleration = np.vstack((interpolated_acceleration_x, 
